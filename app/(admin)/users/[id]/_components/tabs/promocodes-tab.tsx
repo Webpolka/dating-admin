@@ -5,10 +5,16 @@
 // Таб «Промокоды»: история применений промокодов пользователем.
 //
 // Per-user листинг: GET /admin/users/{userId}/promocodes?page=
-// (UserListingsController::promocodes). applied_discount — снапшот
-// скидки в рублях на момент применения (для фин. отчётов).
+// (UserListingsController::promocodes). applied_discount — снапшот скидки
+// в рублях на момент применения (для фин. отчётов). Управление промокодами —
+// в глобальном разделе (там же редактирование/деактивация самих кодов).
+//
+// Зеркало blade-эталона: таблица с колонками ID/Промокод/Скидка(тип+значение)
+// /Транзакция(ссылка на /finance/transactions?q={id})/Дата. discount_type —
+// percent/fixed/premium/vip, для premium/vip показываем duration_days.
 
-import { Tag, Ticket, Percent, Crown, Clock } from "lucide-react";
+import { Crown, Percent, Ticket } from "lucide-react";
+import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -19,43 +25,10 @@ import { TableEmptyRow, TableLoadingRow } from "@/components/admin/table-states"
 import { TabError } from "@/components/admin/tab-states";
 import { useTabUrl, parsePageParam } from "@/hooks/admin/use-tab-url";
 import { useUserPromocodes } from "@/hooks/admin/use-users";
-import { formatDate, formatDateTime } from "@/lib/format";
+import { formatDateTime } from "@/lib/format";
 
 interface PromocodesTabProps {
   userId: number;
-}
-
-function DiscountLabel({
-  type,
-  value,
-  durationDays,
-}: {
-  type: string;
-  value: number;
-  durationDays: number | null;
-}) {
-  switch (type) {
-    case "percent":
-      return <Badge variant="secondary"><Percent className="w-3 h-3 mr-1" />{value}%</Badge>;
-    case "fixed":
-      return <Badge variant="secondary">{value} ₽</Badge>;
-    case "premium":
-      return (
-        <Badge variant="secondary" className="gap-1">
-          <Crown className="w-3 h-3" />
-          Premium {durationDays ? `${durationDays} дн.` : ""}
-        </Badge>
-      );
-    case "vip":
-      return (
-        <Badge variant="secondary" className="gap-1">
-          <Crown className="w-3 h-3" />
-          VIP {durationDays ? `${durationDays} дн.` : ""}
-        </Badge>
-      );
-    default:
-      return <Badge variant="secondary">{type}</Badge>;
-  }
 }
 
 export function PromocodesTab({ userId }: PromocodesTabProps) {
@@ -71,68 +44,82 @@ export function PromocodesTab({ userId }: PromocodesTabProps) {
   const usages = data?.data ?? [];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="rounded-md border border-border bg-card overflow-x-auto">
         <Table className="w-full min-w-160">
           <TableHeader>
             <TableRow className="bg-muted/50 hover:bg-muted/50">
-              <TableHead className="w-40">Код</TableHead>
-              <TableHead className="w-36">Скидка</TableHead>
-              <TableHead className="w-28">Выгода</TableHead>
-              <TableHead>Транзакция</TableHead>
-              <TableHead className="w-28">Действует до</TableHead>
-              <TableHead className="w-36">Применён</TableHead>
+              <TableHead className="w-16">ID</TableHead>
+              <TableHead>Промокод</TableHead>
+              <TableHead className="w-44">Скидка / Бонус</TableHead>
+              <TableHead className="w-48">Транзакция</TableHead>
+              <TableHead className="w-32">Дата применения</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
-              <TableLoadingRow colSpan={6} />
+              <TableLoadingRow colSpan={5} />
             ) : usages.length === 0 ? (
-              <TableEmptyRow colSpan={6} title="Пользователь не применял промокоды" />
+              <TableEmptyRow colSpan={5} title="Пользователь не использовал промокоды" />
             ) : (
               usages.map((u) => (
                 <TableRow key={u.id}>
-                  <TableCell>
-                    <span className="inline-flex items-center gap-2 font-mono text-sm">
-                      <Ticket className="w-4 h-4 text-muted-foreground" />
-                      {u.promo_code?.code ?? "—"}
-                    </span>
+                  {/* ID — моно */}
+                  <TableCell className="text-xs font-mono text-muted-foreground">
+                    #{u.id}
                   </TableCell>
+
+                  {/* Промокод — моно в плашке, или «Код удалён» */}
                   <TableCell>
                     {u.promo_code ? (
-                      <DiscountLabel
-                        type={u.promo_code.discount_type}
-                        value={u.promo_code.discount_value}
-                        durationDays={u.promo_code.duration_days}
-                      />
-                    ) : (
-                      "—"
-                    )}
-                  </TableCell>
-                  <TableCell className="text-sm tabular-nums text-green-500">
-                    {u.applied_discount > 0 ? `−${u.applied_discount} ₽` : "—"}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {u.transaction ? (
-                      <>
-                        #{u.transaction.id} · {u.transaction.amount} ₽ · {u.transaction.status}
-                      </>
-                    ) : (
-                      "без транзакции"
-                    )}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {u.promo_code?.expires_at ? (
-                      <span className="inline-flex items-center gap-1">
-                        <Clock className="w-3.5 h-3.5" />
-                        {formatDate(u.promo_code.expires_at)}
+                      <span className="text-sm font-mono font-medium bg-muted px-2 py-0.5 rounded">
+                        {u.promo_code.code}
                       </span>
                     ) : (
-                      "бессрочно"
+                      <span className="text-sm font-mono text-muted-foreground italic">
+                        Код удалён
+                      </span>
                     )}
                   </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {formatDateTime(u.created_at)}
+
+                  {/* Скидка: тип-бейдж + значение + applied_discount */}
+                  <TableCell>
+                    <div className="flex flex-col gap-1">
+                      {u.promo_code ? (
+                        <DiscountBadge
+                          type={u.promo_code.discount_type}
+                          value={u.promo_code.discount_value}
+                          durationDays={u.promo_code.duration_days}
+                        />
+                      ) : (
+                        <Badge variant="secondary">Архив</Badge>
+                      )}
+                      {u.applied_discount > 0 && (
+                        <span className="text-[10px] text-muted-foreground">
+                          Списано: {u.applied_discount} ₽
+                        </span>
+                      )}
+                    </div>
+                  </TableCell>
+
+                  {/* Транзакция — ссылка на /finance/transactions */}
+                  <TableCell className="text-xs">
+                    {u.transaction ? (
+                      <Link
+                        href={`/finance/transactions?q=${u.transaction.id}`}
+                        className="text-blue-500 hover:underline font-mono"
+                        title="Найти в журнале транзакций"
+                      >
+                        #{u.transaction.id} ({u.transaction.amount} ₽)
+                      </Link>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+
+                  {/* Дата применения */}
+                  <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                    {u.created_at ? formatDateTime(u.created_at) : "—"}
                   </TableCell>
                 </TableRow>
               ))
@@ -153,9 +140,50 @@ export function PromocodesTab({ userId }: PromocodesTabProps) {
       )}
 
       <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-        <Tag className="w-3.5 h-3.5" />
+        <Ticket className="w-3.5 h-3.5" />
         Скидка зафиксирована на момент применения; 1 промокод = 1 применение на пользователя.
       </p>
     </div>
   );
+}
+
+// ============================================
+// БЕЙДЖ СКИДКИ (по discount_type)
+// ============================================
+
+function DiscountBadge({
+  type,
+  value,
+  durationDays,
+}: {
+  type: "percent" | "fixed" | "premium" | "vip";
+  value: number;
+  durationDays: number | null;
+}) {
+  switch (type) {
+    case "percent":
+      return (
+        <Badge variant="secondary" className="gap-1 w-fit">
+          <Percent className="w-3 h-3" />−{value}%
+        </Badge>
+      );
+    case "fixed":
+      return <Badge variant="secondary" className="w-fit">−{value} ₽</Badge>;
+    case "premium":
+      return (
+        <Badge variant="warning" className="gap-1 w-fit">
+          <Crown className="w-3 h-3" />
+          +Premium{durationDays ? ` (${durationDays} дн.)` : ""}
+        </Badge>
+      );
+    case "vip":
+      return (
+        <Badge variant="warning" className="gap-1 w-fit">
+          <Crown className="w-3 h-3" />
+          +VIP{durationDays ? ` (${durationDays} дн.)` : ""}
+        </Badge>
+      );
+    default:
+      return <Badge variant="secondary">{type}</Badge>;
+  }
 }

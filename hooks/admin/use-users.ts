@@ -41,7 +41,7 @@ import {
   type UserDatingParams,
   type UserChatsParams,
   type UserEventsParams,
-  type UserTransactionsParams,
+  type UserFinancesParams,
   type UserGiftsParams,
   type UserCardsParams,
   type UserPromocodesParams,
@@ -123,27 +123,22 @@ export function useUserBlocks(userId: number, params: UserBlocksParams, enabled 
 }
 
 /**
- * Фото пользователя для таба «Фото» (per-user листинг).
+ * Фото пользователя для таба «Фото» (per-user листинг, composite).
  *
- * ВАЖНО про инвалидацию: мутации фото (approve/reject/soft-delete/restore/
- * destroy/set-primary/approve-all/reject-all) живут в hooks/admin/use-photos.ts
- * и инвалидируют ключ ["admin","photos"] (глобальную очередь модерации).
- * Чтобы пер-юзер таб тоже обновлялся после мутации, эти хуки
- * ДОПОЛНИТЕЛЬНО инвалидируют ["user-photos", userId] (см. use-photos.ts,
- * патч ЧАСТИ 7). Без этого таб бы показывал stale-данные после действия.
+ * Бэк: GET /admin/users/{userId}/photos (UserListingsController::photos) →
+ * {albums: UserPhotoAlbumItem[], counts: UserPhotoAlbumCounts}.
  *
- * placeholderData: prev — soft loading при смене статуса/страницы,
- * чтобы карточки не мигали.
+ * Таб БЕЗ модерации — группировка по альбомам (один альбом = одна карточка).
+ * params = {} (бэк не использует page/per_page, отдаёт все альбомы разом);
+ * хук оставлен params-driven для единообразия с остальными пер-юзер хуками
+ * и чтобы ключ реактивности оставался стабильным. Мутаций здесь нет by design:
+ * модерация фото живёт в глобальной очереди /moderation/photos.
  */
-export function useUserPhotos(userId: number, params: UserPhotosParams, enabled = true) {
-  return useQuery({
-    queryKey: ["user-photos", userId, params],
-    queryFn: () => usersApi.getPhotos(userId, params),
-    placeholderData: (prev) => prev,
-    staleTime: 15_000,
-    enabled: enabled && !!userId,
-  });
-}
+export const useUserPhotos = (
+  userId: number,
+  params: UserPhotosParams,
+  enabled = true,
+) => useUserListing("user-photos", usersApi.getPhotos, userId, params, enabled);
 
 // ============================================================
 // ПЕР-ЮЗЕР ЛИСТИНГИ (табы страницы пользователя)
@@ -214,11 +209,11 @@ export const useUserEvents = (
   enabled = true,
 ) => useUserListing("user-events", usersApi.getEvents, userId, params, enabled);
 
-export const useUserTransactions = (
+export const useUserFinances = (
   userId: number,
-  params: UserTransactionsParams,
+  params: UserFinancesParams,
   enabled = true,
-) => useUserListing("user-transactions", usersApi.getTransactions, userId, params, enabled);
+) => useUserListing("user-finances", usersApi.getFinances, userId, params, enabled);
 
 export const useUserGifts = (
   userId: number,

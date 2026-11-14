@@ -12,12 +12,9 @@ import type { LaravelPaginated, UserBadgeData } from "@/lib/types";
 
 // Реюз доменных типов из хуков (единый источник правды для форматов
 // глобальных списков — per-user ответы бэкенда совместимы с ними 1:1).
-import type { PhotoItem } from "@/hooks/admin/use-photos";
 import type { DiaryItem } from "@/hooks/admin/use-diaries";
 import type { SwipeItem, MatchItem } from "@/hooks/admin/use-dating";
 import type { TransactionItem } from "@/hooks/admin/use-transactions";
-import type { UserGiftItem } from "@/hooks/admin/use-gifts";
-import type { ChatListItem } from "@/hooks/admin/use-chats";
 
 // ============================================================
 // ТИПЫ: бан / разбан / деактивация
@@ -342,49 +339,78 @@ export interface UserBlocksParams {
 // ТИПЫ: фото пользователя (таб «Фото» на странице /users/[id])
 // ============================================================
 //
-// Бэкенд: GET /admin/users/{userId}/photos?status=pending&page=2
-// Контроллер: UserController::photos() → возвращает {data, counts, status},
-// где data — PhotoPaginator (структура идентична ReportsPaginated /
-// UserBlocksPaginated), counts — счётчики по 4 статусам для табов.
+// Бэкенд: GET /admin/users/{userId}/photos
+// Контроллер: UserListingsController::photos() → composite-ответ
+// {albums: AlbumItem[], counts: AlbumCounts}.
 //
-// Фото-айтем — это ImageItem из hooks/admin/use-photos.ts (PhotoItem).
-// Здесь НЕ дублируем тип, а реэкспортируем — единственный источник правды
-// остаётся use-photos.ts (как раньше). Если позже PhotoItem переедет
-// в lib/api/users.ts — обновим импорт здесь.
+// Таб БЕЗ модерации — группировка по альбомам (один альбом = одна карточка).
+// Без статус-табов и без пагинации: альбомов у юзера немного, отдаются все
+// разом, фото внутри альбома — целиком (is_primary DESC, position ASC).
 //
-// Status-табы: pending | approved | rejected | quarantine.
-// quarantine ≠ status='rejected'. Карантин = soft-deleted (deleted_at IS NOT NULL),
-// status при этом может быть любым. Зеркалит PhotoController::getCounts().
+// Фото без album_id (orphan) — бэк группирует в виртуальный альбом с id=null,
+// name='Без альбома' (последним в списке). Не теряем такие фото.
+//
+// Модерация фото (status/reject_reason/trashed/...) живёт в глобальной очереди
+// /moderation/photos. Здесь фото-айтем — лёгкий формат без модераторских полей:
+// только id, тип, is_primary, is_intimate, position, title/description, URLs, created_at.
+//
+// AlbumItem.photos_count — денормализованный счётчик из albums.photos_count
+// (для orphan-альбома = реальное число фото в нём).
 
-export type UserPhotoStatus = "pending" | "approved" | "rejected" | "quarantine";
-
-export interface UserPhotosPaginated {
-  data: PhotoItem[];
-  total: number;
-  current_page: number;
-  last_page: number;
-  per_page: number;
-  from: number | null;
-  to: number | null;
+/** Лёгкая фото-запись внутри альбома (без модераторских полей). */
+export interface AlbumPhotoItem {
+  id: number;
+  type: "profile" | "verification";
+  is_primary: boolean;
+  is_intimate: boolean;
+  position: number;
+  title: string | null;
+  description: string | null;
+  created_at: string | null;
+  /** URL accessor'ы из Photo::$appends (path_* → Storage::url). */
+  thumb_url: string;
+  medium_url: string;
+  large_url: string;
+  original_url: string;
 }
 
-/** Счётчики по 4 статусам для статус-табов. Зеркалит PhotoController::getCounts(). */
-export interface UserPhotoCounts {
-  total: number;
-  pending: number;
-  approved: number;
-  rejected: number;
-  quarantine: number;
+/** Альбом юзера (или виртуальный «Без альбома» для orphan-фото, id=null). */
+export interface UserPhotoAlbumItem {
+  /** null — виртуальный «Без альбома» (orphan-фото без album_id). */
+  id: number | null;
+  name: string;
+  description: string | null;
+  is_default: boolean;
+  is_private: boolean;
+  /** Денормализованный счётчик из albums.photos_count (для orphan — реальное число). */
+  photos_count: number;
+  created_at: string | null;
+  /** ISO-8601 если альбом soft-deleted (видим для post-factum). null если жив. */
+  deleted_at: string | null;
+  photos: AlbumPhotoItem[];
 }
 
+/** Общие счётчики для шапки таба. */
+export interface UserPhotoAlbumCounts {
+  albums: number;
+  photos_total: number;
+  photos_primary: number;
+  photos_intimate: number;
+}
+
+/** Composite-ответ таба «Фото» — список альбомов + общие счётчики. */
 export interface UserPhotosResponse {
-  data: UserPhotosPaginated;
-  counts: UserPhotoCounts;
-  status: UserPhotoStatus;
+  albums: UserPhotoAlbumItem[];
+  counts: UserPhotoAlbumCounts;
 }
 
+/**
+ * Параметры запроса. Бэк не использует page/per_page (отдаёт все альбомы разом),
+ * но они валидируются UserPhotosRequest для совместимости с общей фабрикой
+ * useUserListing. На фронте params = {} — пустой объект, ключ реактивности —
+ * только userId.
+ */
 export interface UserPhotosParams {
-  status?: UserPhotoStatus;
   page?: number;
 }
 
@@ -398,11 +424,18 @@ export interface UserPhotosParams {
 // Доменные айтемы (дневники, свайпы, мэтчи, транзакции, подарки,
 // чаты) реюзают типы глобальных списков — форматы 1:1.
 
-// --- Комм. фото (автор = юзер) ---
+// --- Комм. фото (made / received — две колонки) ---
 
-export type UserCommentTabStatus =
-  | "all" | "pending" | "approved" | "rejected" | "spam" | "karantine";
-
+/**
+ * Строка комментария в табе «Комм. фото» юзера.
+ *
+ * Поля `user` (автор комментария) и `photo` (контекст фото) добираются бэкендом
+ * по-разному в зависимости от колонки:
+ *   - made     → photo.user (владелец фото, под которым комментировал юзер).
+ *   - received → user (автор комментария под фото нашего юзера), photo — только id.
+ *
+ * В made-колонке `user` — это сам userId (фронт его не рисует, но поле приходит).
+ */
 export interface UserPhotoCommentItem {
   id: number;
   photo_id: number | null;
@@ -418,6 +451,7 @@ export interface UserPhotoCommentItem {
   is_pinned: boolean;
   likes_count: number;
   replies_count: number;
+  user: UserBadgeData | null;
   photo: {
     id: number;
     user_id: number;
@@ -430,56 +464,83 @@ export interface UserPhotoCommentItem {
   } | null;
 }
 
-export interface UserCommentTabCounts {
+/** Внутренняя пагинация одной колонки (плоский Laravel-пагинатор). */
+export interface UserPhotoCommentsPaginated {
+  data: UserPhotoCommentItem[];
   total: number;
-  pending: number;
-  approved: number;
-  rejected: number;
-  spam: number;
-  karantine: number;
+  current_page: number;
+  last_page: number;
+  per_page: number;
+  from: number | null;
+  to: number | null;
 }
 
-export interface UserPhotoCommentsResponse extends LaravelPaginated<UserPhotoCommentItem> {
-  counts: UserCommentTabCounts;
-  status: UserCommentTabStatus;
+/**
+ * Composite-ответ: две независимые пагинации + общие счётчики.
+ * Зеркало UserReportsResponse / UserGiftsResponse.
+ */
+export interface UserPhotoCommentsResponse {
+  made: UserPhotoCommentsPaginated;
+  received: UserPhotoCommentsPaginated;
+  counts: { made: number; received: number };
 }
 
 export interface UserPhotoCommentsParams {
-  status?: UserCommentTabStatus;
-  page?: number;
+  made_page?: number;
+  received_page?: number;
 }
 
 // --- Дневники (автор = юзер) ---
 
-export type UserDiaryTabStatus = "all" | "draft" | "pending" | "published" | "rejected";
-export type UserDiaryTrashedFilter = "with" | "only" | "without";
-
-export interface UserDiaryCounts {
-  all: number;
-  published: number;
-  pending: number;
-  rejected: number;
-  draft: number;
-  trashed: number;
-}
-
+/**
+ * Структура дневника в пер-юзер табе = 1:1 с глобальным списком (DiaryItem).
+ * `user` в пер-юзер табе всегда сам userId (фронт не рисует), но поле приходит.
+ *
+ * diary_rubric — рубрика записи (null = «Без рубрики»). Структура 1:1 с
+ * глобальной очередью модерации /moderation/diary.
+ */
 export interface UserDiariesResponse extends LaravelPaginated<DiaryItem> {
-  counts: UserDiaryCounts;
-  status: UserDiaryTabStatus;
-  trashed: UserDiaryTrashedFilter;
+  /** Рубрики, в которых у юзера реально есть посты — для кнопок фильтра. */
+  rubrics: UserDiaryRubricFilter[];
+  /** Текущий фильтр: 'all' | 'none' | id рубрики (число). */
+  rubric: "all" | "none" | number;
+  /** Текущий поисковый запрос (эхо). */
+  search: string | null;
 }
 
 export interface UserDiariesParams {
-  status?: UserDiaryTabStatus;
-  trashed?: UserDiaryTrashedFilter;
+  rubric?: "all" | "none" | number;
+  search?: string;
   page?: number;
 }
 
-// --- Комм. дневников (автор = юзер) ---
+/**
+ * Рубрика для кнопок фильтра в табе «Дневники».
+ * Личные (is_personal=true, user_id != null) — рисуются с иконкой User,
+ * глобальные (is_personal=false) — с Globe.
+ */
+export interface UserDiaryRubricFilter {
+  id: number;
+  name: string;
+  is_active: boolean;
+  is_personal: boolean;
+  user_id: number | null;
+}
 
+// --- Комм. дневников (made / received — две колонки) ---
+
+/**
+ * Строка комментария к дневнику в пер-юзер табе.
+ *
+ * Контекстные поля добираются бэкендом по-разному в зависимости от колонки:
+ *   - made     → diary.user (автор записи, под которой комментировал юзер).
+ *   - received → user (автор комментария под записью нашего юзера) + diary (id/title).
+ *
+ * В made-колонке `user` — это сам userId (фронт не рисует, но поле приходит).
+ */
 export interface UserDiaryCommentItem {
   id: number;
-  diary_id: number;
+  diary_id: number | null;
   parent_id: number | null;
   content: string;
   status: "pending" | "approved" | "rejected" | "spam";
@@ -491,6 +552,7 @@ export interface UserDiaryCommentItem {
   trashed: boolean;
   likes_count: number;
   replies_count: number;
+  user: UserBadgeData | null;
   diary: {
     id: number;
     title: string;
@@ -500,14 +562,30 @@ export interface UserDiaryCommentItem {
   } | null;
 }
 
-export interface UserDiaryCommentsResponse extends LaravelPaginated<UserDiaryCommentItem> {
-  counts: UserCommentTabCounts;
-  status: UserCommentTabStatus;
+/** Внутренняя пагинация одной колонки (плоский Laravel-пагинатор). */
+export interface UserDiaryCommentsPaginated {
+  data: UserDiaryCommentItem[];
+  total: number;
+  current_page: number;
+  last_page: number;
+  per_page: number;
+  from: number | null;
+  to: number | null;
+}
+
+/**
+ * Composite-ответ: две независимые пагинации + общие счётчики.
+ * Зеркало UserReportsResponse / UserGiftsResponse / UserPhotoCommentsResponse.
+ */
+export interface UserDiaryCommentsResponse {
+  made: UserDiaryCommentsPaginated;
+  received: UserDiaryCommentsPaginated;
+  counts: { made: number; received: number };
 }
 
 export interface UserDiaryCommentsParams {
-  status?: UserCommentTabStatus;
-  page?: number;
+  made_page?: number;
+  received_page?: number;
 }
 
 // --- Знакомства (свайпы + мэтчи юзера, две пагинации) ---
@@ -536,7 +614,42 @@ export interface UserDatingParams {
 
 // --- Чаты юзера ---
 
-export type UserChatsResponse = LaravelPaginated<ChatListItem>;
+/**
+ * Строка чата в per-user табе. В отличие от глобального ChatListItem,
+ * здесь оператор видит «собеседника» (partner ≠ текущий юзер), а не обоих
+ * участников, плюс participant-поля юзера для бейджей строки.
+ *
+ * Структура 1:1 с UserListingsController::formatChatParticipantRow().
+ */
+export interface UserChatItem {
+  /** ID записи ChatParticipant (для ключа React, не chat.id). */
+  participant_id: number;
+  chat: {
+    id: number;
+    /** 'private' | 'support' — для бейджа типа чата. */
+    type: string;
+    is_locked: boolean;
+    last_message_at: string | null;
+    last_message: {
+      id: number;
+      type: string;
+      body: string;
+      created_at: string | null;
+    } | null;
+  } | null;
+  /** Собеседник — другой участник ≠ userId. AdminUserBadgeResource-формат. */
+  partner: UserBadgeData | null;
+  /** Состояние юзера в этом чате (для бейджей строки). */
+  participant_state: {
+    unread_count: number;
+    is_hidden: boolean;
+    is_muted: boolean;
+    is_blocked: boolean;
+    last_read_at: string | null;
+  };
+}
+
+export type UserChatsResponse = LaravelPaginated<UserChatItem>;
 
 export interface UserChatsParams {
   page?: number;
@@ -544,11 +657,31 @@ export interface UserChatsParams {
 
 // --- Лента событий юзера ---
 
+/**
+ * Метаданные события для рендера таймлайна.
+ *
+ * Зеркало blade-эталона: бэк строит meta из App\Enums\V1\UserEventType
+ * (UserListingsController::eventMeta): label()/icon()/color(). Для типов,
+ * отсутствующих в enum — fallback: title=ucfirst(str_replace('_',' ',$type)),
+ * icon='activity', color='bg-primary/10 text-primary'.
+ *
+ * icon — строковое имя lucide-иконки (фронт рендерит через ICON_MAP).
+ * color — tailwind-класс круга-иконки (фон + цвет), например
+ *   'bg-blue-500/10 text-blue-500'.
+ */
+export interface UserEventMeta {
+  title: string;
+  icon: string;
+  color: string;
+}
+
 export interface UserEventItem {
   id: number;
   type: string;
   properties: Record<string, unknown> | null;
   created_at: string | null;
+  /** Метаданные для таймлайна (заголовок/иконка/цвет из enum). */
+  meta: UserEventMeta;
 }
 
 export type UserEventsResponse = LaravelPaginated<UserEventItem>;
@@ -557,42 +690,134 @@ export interface UserEventsParams {
   page?: number;
 }
 
-// --- Финансы: транзакции юзера ---
+// --- Финансы юзера: composite {balance, statuses, transactions, subscriptions} ---
 
-export type UserTransactionTabStatus = "all" | "success" | "pending" | "failed" | "refunded";
-
-/** Транзакция без поля user — автор всегда юзер страницы. */
+/**
+ * Транзакция без поля user — автор всегда юзер страницы.
+ * Формат 1:1 с глобальной очередью /finance/transactions (TransactionItem).
+ */
 export type UserTransactionItem = Omit<TransactionItem, "user">;
 
-export interface UserTransactionCounts {
-  all: number;
-  success: number;
-  pending: number;
-  failed: number;
-  refunded: number;
+/**
+ * Подписка юзера (UserSubscription). Зеркало blade-эталона: tier-бейдж,
+ * название тарифа, срок, чек (transaction_id), статус-бейдж + дата события.
+ */
+export interface UserSubscriptionItem {
+  id: number;
+  plan_id: number;
+  transaction_id: number | null;
+  tier: "premium" | "vip";
+  status: "active" | "expired" | "canceled" | "failed";
+  status_badge: { variant: string; label: string };
+  is_auto_renew: boolean;
+  starts_at: string | null;
+  ends_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  plan: {
+    id: number;
+    tier: "premium" | "vip";
+    name: string;
+    price: number;
+    currency: string;
+    duration_days: number;
+  } | null;
 }
 
-export interface UserTransactionsResponse extends LaravelPaginated<UserTransactionItem> {
-  counts: UserTransactionCounts;
-  status: UserTransactionTabStatus;
+/** Скалярный блок баланса (UserBalance). */
+export interface UserBalancePayload {
+  credits: number;
+  superlikes_remaining: number;
+  superlikes_reset_at: string | null;
 }
 
-export interface UserTransactionsParams {
-  status?: UserTransactionTabStatus;
-  page?: number;
+/** Скалярный блок активных статусов (Premium/VIP). */
+export interface UserStatusesPayload {
+  has_active_premium: boolean;
+  premium_expires_at: string | null;
+  has_active_vip: boolean;
+  vip_expires_at: string | null;
 }
 
-// --- Подарки юзера (отправленные + полученные, две пагинации) ---
+/**
+ * Composite-ответ «финансового дашборда» юзера.
+ *
+ *   balance        — credits + superlikes_remaining.
+ *   statuses        — active Premium/VIP (для карточки статусов сверху).
+ *   transactions    — история транзакций, по 5 на страницу (trans_page).
+ *   subscriptions    — история подписок, по 5 на страницу (sub_page).
+ *
+ * Зеркало UserReportsResponse / UserGiftsResponse: две независимые пагинации
+ * в одном запросе.
+ */
+export interface UserFinancesResponse {
+  balance: UserBalancePayload;
+  statuses: UserStatusesPayload;
+  transactions: LaravelPaginated<UserTransactionItem>;
+  subscriptions: LaravelPaginated<UserSubscriptionItem>;
+}
 
-export interface UserGiftsResponse {
-  sent: LaravelPaginated<UserGiftItem>;
-  received: LaravelPaginated<UserGiftItem>;
-  counts: { sent: number; received: number };
+export interface UserFinancesParams {
+  trans_page?: number;
+  sub_page?: number;
+}
+
+// --- Подарки юзера: единый список с фильтром по направлению ---
+
+/**
+ * Строка подарка (UserGift) в per-user табе.
+ *
+ * Поле `direction` ('sent' | 'received') добавлено — фронт по нему рисует
+ * стрелку направления и выбирает counterpart (получателя для sent,
+ * отправителя для received). В режиме filter=all в одном списке могут быть
+ * оба направления одновременно.
+ *
+ * Имя `UserGiftTabItem` (а не UserGiftItem) — чтобы не конфликтовать с
+ * глобальным типом UserGiftItem из hooks/admin/use-gifts.ts (используется
+ * в /finance/gifts → history). Пер-юзер таб добавляет direction, глобальный
+ * список — нет.
+ */
+export interface UserGiftTabItem {
+  id: number;
+  /** 'sent' = юзер отправитель, 'received' = юзер получатель. */
+  direction: "sent" | "received";
+  snapshot_name: string;
+  snapshot_image_url: string;
+  snapshot_price: number;
+  message: string | null;
+  is_private: boolean;
+  is_read: boolean;
+  /** Soft-deleted (скрыт юзером) — withTrashed() на бэке. */
+  is_hidden: boolean;
+  created_at: string | null;
+  sender: UserBadgeData | null;
+  receiver: UserBadgeData | null;
+  gift: {
+    id: number;
+    name: string;
+    image_url: string;
+    type: string;
+    category: string;
+    category_label: string | null;
+    category_color: string | null;
+  } | null;
+}
+
+/**
+ * Single-list с фильтром. Раньше тут был composite sent/received с двумя
+ * пагинациями — но blade-эталон использует именно single-list с кнопками
+ * фильтра (all|sent|received), одна пагинация.
+ */
+export interface UserGiftsResponse extends LaravelPaginated<UserGiftTabItem> {
+  /** Счётчики по направлениям — для бейджей на кнопках фильтра. */
+  counts: { all: number; sent: number; received: number };
+  /** Текущий фильтр (эхо). */
+  filter: "all" | "sent" | "received";
 }
 
 export interface UserGiftsParams {
-  sent_page?: number;
-  received_page?: number;
+  filter?: "all" | "sent" | "received";
+  page?: number;
 }
 
 // --- Карты юзера ---
@@ -668,15 +893,57 @@ export interface UserBroadcastItem {
   admin: { id: number; name: string } | null;
 }
 
-export type UserBroadcastsResponse = LaravelPaginated<UserBroadcastItem>;
+export type UserBroadcastsResponse = LaravelPaginated<UserBroadcastItem> & {
+  /** Счётчики по каналам — для бейджей на кнопках фильтра. */
+  counts: { all: number; in_app: number; email: number; push: number };
+  /** Текущий фильтр (эхо). */
+  filter: "all" | "in_app" | "push" | "email";
+};
 
 export interface UserBroadcastsParams {
+  filter?: "all" | "in_app" | "push" | "email";
   page?: number;
 }
 
-// --- Логи админов по юзеру (формат строк = BanHistoryEntry) ---
+// --- Логи админов по юзеру (таймлайн с before/after + meta) ---
 
-export type UserAdminLogsResponse = LaravelPaginated<BanHistoryEntry>;
+/**
+ * Метаданные записи AdminLog для рендера таймлайна.
+ *
+ * Зеркало blade-эталона `\App\Support\AdminLogMeta::get($action)`:
+ *   - title       — человекочитаемый заголовок действия.
+ *   - icon        — имя lucide-иконки (фронт рендерит динамически).
+ *   - iconColor   — tailwind-класс фона/цвета круга-иконки.
+ *   - badge       — {variant, label} для бейджа действия.
+ */
+export interface UserAdminLogMeta {
+  title: string;
+  icon: string;
+  iconColor: string;
+  badge: { variant: string; label: string };
+}
+
+/**
+ * Строка журнала AdminLog в per-user табе.
+ *
+ * В отличие от глобального AdminLogResource (используется в /system/admin-log),
+ * здесь не нужен object_type/object_url — контекст уже «действия над этим
+ * юзером». Зато добавлен `meta` (title/icon/badge), который глобальный журнал
+ * считает на фронте, а per-user таб получает готовым с бэка.
+ */
+export interface UserAdminLogItem {
+  id: number;
+  action: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  ip_address: string | null;
+  created_at: string | null;
+  /** Метаданные для таймлайна (заголовок/иконка/бейдж). */
+  meta: UserAdminLogMeta;
+  admin: { id: number; name: string; email: string } | null;
+}
+
+export type UserAdminLogsResponse = LaravelPaginated<UserAdminLogItem>;
 
 export interface UserAdminLogsParams {
   page?: number;
@@ -895,11 +1162,11 @@ export const usersApi = {
     return data;
   },
 
-  getTransactions: async (
+  getFinances: async (
     userId: number,
-    params: UserTransactionsParams,
-  ): Promise<UserTransactionsResponse> => {
-    const { data } = await api.get(`/admin/users/${userId}/transactions`, { params });
+    params: UserFinancesParams,
+  ): Promise<UserFinancesResponse> => {
+    const { data } = await api.get(`/admin/users/${userId}/finances`, { params });
     return data;
   },
 

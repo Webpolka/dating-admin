@@ -1,13 +1,18 @@
 "use client";
 
-// app/(admin)/users/[id]/_components/tabs/cards-tab.tsx
+// app/(admin)/users/[id]/_components/tabs/cards.tsx
 //
 // Таб «Карты»: платёжные карты пользователя.
 //
 // Per-user листинг: GET /admin/users/{userId}/cards?page=
-// (UserListingsController::cards, read-only — токены карт бэкенд
-// не отдаёт, только маскированные данные). Массовые операции с картами
-// не предусмострены — управляет ими сам юзер через платёжный шлюз.
+// (UserListingsController::cards, withTrashed — удалённые карты остаются в
+// истории для фин. отчётов. Read-only: токены карт бэк не отдаёт, только
+// маскированные данные last4/brand/срок). Управляет ими сам юзер через
+// платёжный шлюз — массовых операций в админке нет.
+//
+// Зеркало blade-эталона: таблица с колонками ID/Карта/Шлюз/Срок/Статус/Привязана.
+// trashed-карты — opacity-50 + бейдж «Удалена». is_expired — бейдж «Истекла»
+// рядом со сроком. is_default — бейдж «По умолчанию».
 
 import { CreditCard, Star } from "lucide-react";
 
@@ -45,61 +50,95 @@ export function CardsTab({ userId }: CardsTabProps) {
   const cards = data?.data ?? [];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="rounded-md border border-border bg-card overflow-x-auto">
         <Table className="w-full min-w-140">
           <TableHeader>
             <TableRow className="bg-muted/50 hover:bg-muted/50">
-              <TableHead className="w-36">Бренд</TableHead>
-              <TableHead className="w-32">Номер</TableHead>
-              <TableHead className="w-28">Срок</TableHead>
-              <TableHead className="w-36">Шлюз</TableHead>
-              <TableHead>Статус</TableHead>
-              <TableHead className="w-36">Добавлена</TableHead>
+              <TableHead className="w-16">ID</TableHead>
+              <TableHead>Карта</TableHead>
+              <TableHead className="w-32">Шлюз</TableHead>
+              <TableHead className="w-32">Срок</TableHead>
+              <TableHead className="w-40">Статус</TableHead>
+              <TableHead className="w-32">Привязана</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               <TableLoadingRow colSpan={6} />
             ) : cards.length === 0 ? (
-              <TableEmptyRow colSpan={6} title="У пользователя нет платёжных карт" />
+              <TableEmptyRow colSpan={6} title="У пользователя нет привязанных банковских карт" />
             ) : (
               cards.map((card) => (
-                <TableRow key={card.id}>
+                <TableRow
+                  key={card.id}
+                  className={card.trashed ? "opacity-50" : undefined}
+                >
+                  {/* ID — моно, не кликабельный (глобального раздела карт нет) */}
+                  <TableCell className="text-xs font-mono text-muted-foreground">
+                    #{card.id}
+                  </TableCell>
+
+                  {/* Карта: бренд + маскированный номер */}
                   <TableCell>
-                    <span className="inline-flex items-center gap-2 text-sm">
+                    <div className="flex items-center gap-2">
                       <CreditCard className="w-4 h-4 text-muted-foreground" />
-                      {CARD_BRAND_LABELS[card.card_type ?? ""] ?? card.card_type ?? "—"}
-                    </span>
+                      <span className="text-sm font-medium uppercase">
+                        {CARD_BRAND_LABELS[card.card_type ?? ""] ?? card.card_type ?? "—"}
+                      </span>
+                      <span className="text-sm font-mono">**** {card.last4 ?? "????"}</span>
+                    </div>
                   </TableCell>
-                  <TableCell className="font-mono text-sm">•••• {card.last4 ?? "????"}</TableCell>
-                  <TableCell className="text-sm tabular-nums text-muted-foreground">
-                    {card.expiry_month && card.expiry_year
-                      ? `${card.expiry_month}/${card.expiry_year}`
-                      : "—"}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{card.gateway}</TableCell>
+
+                  {/* Шлюз */}
                   <TableCell>
-                    <div className="flex flex-wrap gap-1">
-                      {card.is_default && (
-                        <Badge variant="default" className="gap-1">
-                          <Star className="w-3 h-3" />
-                          основная
-                        </Badge>
-                      )}
+                    <Badge variant="secondary" className="capitalize">
+                      {card.gateway ?? "—"}
+                    </Badge>
+                  </TableCell>
+
+                  {/* Срок + бейдж истечения */}
+                  <TableCell className="text-xs text-muted-foreground">
+                    {card.expiry_month && card.expiry_year ? (
+                      <div className="flex items-center gap-1 flex-wrap">
+                        <span className="tabular-nums">
+                          {card.expiry_month} / {card.expiry_year}
+                        </span>
+                        {card.is_expired && (
+                          <Badge variant="destructive">Истекла</Badge>
+                        )}
+                      </div>
+                    ) : (
+                      "—"
+                    )}
+                  </TableCell>
+
+                  {/* Статус: удалена | (по умолчанию + активна/неактивна) */}
+                  <TableCell>
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       {card.trashed ? (
-                        <Badge variant="outline">удалена</Badge>
-                      ) : card.is_expired ? (
-                        <Badge variant="warning">истекла</Badge>
-                      ) : card.is_active ? (
-                        <Badge variant="success">активна</Badge>
+                        <Badge variant="destructive">Удалена</Badge>
                       ) : (
-                        <Badge variant="secondary">неактивна</Badge>
+                        <>
+                          {card.is_default && (
+                            <Badge variant="default" className="gap-1">
+                              <Star className="w-3 h-3" />
+                              По умолчанию
+                            </Badge>
+                          )}
+                          {card.is_active ? (
+                            <Badge variant="success">Активна</Badge>
+                          ) : (
+                            <Badge variant="secondary">Неактивна</Badge>
+                          )}
+                        </>
                       )}
                     </div>
                   </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {formatDateTime(card.created_at)}
+
+                  {/* Привязана — дата создания */}
+                  <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                    {card.created_at ? formatDateTime(card.created_at) : "—"}
                   </TableCell>
                 </TableRow>
               ))
