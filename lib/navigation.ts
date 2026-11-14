@@ -2,7 +2,7 @@
 import { 
   LayoutDashboard, Users, Wallet, Crown, Gift, ShieldCheck, Megaphone, 
   ScrollText, Image, FileText, Settings, Terminal, Headset, Files, 
-  MessagesSquare, ShieldBan, MessageCircle, BookOpen, Heart, Flag, 
+  MessagesSquare, ShieldBan, MessageCircle, BookOpen, Heart, Flag, Sparkles ,
   Siren, UserX
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -38,10 +38,11 @@ export const navGroups: { label: string; items: NavItem[] }[] = [
       { title: "Роли и Админы", href: "/system/roles", icon: ShieldCheck, roles: ['admin'] },
       { title: "Рассылка уведомлений", href: "/system/broadcasts", icon: Megaphone, roles: ['admin'] },
       { title: "Журнал действий", href: "/system/admin-log", icon: ScrollText, roles: ['admin'] },
-      { title: "Geo IP локации", href: "/system/geoip", icon: ScrollText, roles: ['admin'] },
-      { title: "Медиа", href: "/system/media", icon: Image, roles: ['admin'] },
+      { title: "Geo IP локации", href: "/system/geoip", icon: ScrollText, roles: ['admin'] },      
+      { title: "Медиа", href: "/system/media", icon: Image, roles: ['admin'] },      
       { title: "Блог", href: "/system/blog/posts", icon: FileText, roles: ['admin'] },
       { title: "Страницы", href: "/system/pages", icon: FileText, roles: ['admin'] },
+      { title: "Интересы", href: "/system/interests", icon: Sparkles, roles: ['admin'] },
       { title: "Настройки", href: "/system/settings", icon: Settings, roles: ['admin'] },
       { title: "Логи Системы", href: "/system/logs", icon: Terminal, roles: ['admin'] },
     ],
